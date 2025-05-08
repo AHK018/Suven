@@ -1,129 +1,128 @@
 
-Updated Project Structure
+Here's a clean, production-ready AWS CDK setup (Python) for sequential deployment with connections between Lambda, DynamoDB, and EventBridge.
+
+✅ Architecture Overview
+📦 Stacks (deployed in order):
+
+DynamoDBStack → creates the table
+
+LambdaStack → creates a Lambda and connects it to DynamoDB
+
+EventBridgeStack → creates a rule to invoke Lambda on events
+
+All stacks are deployed sequentially using .add_dependency().
+
+📁 Project Structure
 markdown
 Copy code
-eventbridge-lambda-dynamo/
+cdk-app/
 ├── app.py
-├── cdk.json
 ├── requirements.txt
+├── cdk.json
 ├── eventbridge_lambda_dynamo/
 │   ├── __init__.py
-│   ├── eventbridge_stack.py
+│   ├── dynamodb_stack.py
 │   ├── lambda_stack.py
-│   └── dynamodb_stack.py
-├── .github/
-│   └── workflows/
-│       └── deploy.yml
-✅ 1. app.py
+│   └── eventbridge_stack.py
+✅ app.py
 python
 Copy code
 #!/usr/bin/env python3
 import aws_cdk as cdk
-from eventbridge_lambda_dynamo.eventbridge_stack import EventBridgeStack
-from eventbridge_lambda_dynamo.lambda_stack import LambdaStack
 from eventbridge_lambda_dynamo.dynamodb_stack import DynamoDBStack
+from eventbridge_lambda_dynamo.lambda_stack import LambdaStack
+from eventbridge_lambda_dynamo.eventbridge_stack import EventBridgeStack
 
 app = cdk.App()
 
-event_stack = EventBridgeStack(app, "EventBridgeStack")
-lambda_stack = LambdaStack(app, "LambdaStack")
-lambda_stack.add_dependency(event_stack)
+# Create DynamoDB first
+dynamo_stack = DynamoDBStack(app, "DynamoDBStack")
 
-dynamodb_stack = DynamoDBStack(app, "DynamoDBStack")
-dynamodb_stack.add_dependency(lambda_stack)
+# Then Lambda (uses DynamoDB table)
+lambda_stack = LambdaStack(app, "LambdaStack", table=dynamo_stack.table)
+lambda_stack.add_dependency(dynamo_stack)
+
+# Finally EventBridge (triggers Lambda)
+eventbridge_stack = EventBridgeStack(app, "EventBridgeStack", lambda_fn=lambda_stack.lambda_fn)
+eventbridge_stack.add_dependency(lambda_stack)
 
 app.synth()
-✅ 2. eventbridge_stack.py
+✅ dynamodb_stack.py
 python
 Copy code
-from aws_cdk import Stack, aws_events as events
-from constructs import Construct
-
-class EventBridgeStack(Stack):
-    def __init__(self, scope: Construct, id: str, **kwargs):
-        super().__init__(scope, id, **kwargs)
-
-        events.Rule(
-            self, "SampleEventRule",
-            event_pattern=events.EventPattern(
-                source=["custom.source"]
-            )
-        )
-✅ 3. lambda_stack.py
-python
-Copy code
-from aws_cdk import Stack, aws_lambda as _lambda
-from constructs import Construct
-
-class LambdaStack(Stack):
-    def __init__(self, scope: Construct, id: str, **kwargs):
-        super().__init__(scope, id, **kwargs)
-
-        _lambda.Function(
-            self, "SampleLambda",
-            runtime=_lambda.Runtime.PYTHON_3_9,
-            handler="index.handler",
-            code=_lambda.Code.from_inline(
-                "def handler(event, context):\n    print('Hello from Lambda')"
-            )
-        )
-✅ 4. dynamodb_stack.py
-python
-Copy code
-from aws_cdk import Stack, aws_dynamodb as ddb
+from aws_cdk import aws_dynamodb as ddb, Stack
 from constructs import Construct
 
 class DynamoDBStack(Stack):
     def __init__(self, scope: Construct, id: str, **kwargs):
         super().__init__(scope, id, **kwargs)
 
-        ddb.Table(
-            self, "SampleTable",
-            partition_key={"name": "id", "type": ddb.AttributeType.STRING}
+        self.table = ddb.Table(
+            self, "MyTable",
+            partition_key={"name": "id", "type": ddb.AttributeType.STRING},
+            billing_mode=ddb.BillingMode.PAY_PER_REQUEST
         )
-✅ 5. .github/workflows/deploy.yml
-Same as before — it’ll automatically synthesize and deploy stacks in order due to .add_dependency().
+✅ lambda_stack.py
+python
+Copy code
+from aws_cdk import (
+    Stack,
+    aws_lambda as _lambda,
+    aws_dynamodb as ddb,
+)
+from constructs import Construct
+
+class LambdaStack(Stack):
+    def __init__(self, scope: Construct, id: str, table: ddb.ITable, **kwargs):
+        super().__init__(scope, id, **kwargs)
+
+        self.lambda_fn = _lambda.Function(
+            self, "MyFunction",
+            runtime=_lambda.Runtime.PYTHON_3_9,
+            handler="index.handler",
+            code=_lambda.Code.from_inline("""
+def handler(event, context):
+    print("Event received:", event)
+""")
+        )
+
+        table.grant_read_write_data(self.lambda_fn)
+✅ eventbridge_stack.py
+python
+Copy code
+from aws_cdk import (
+    Stack,
+    aws_events as events,
+    aws_events_targets as targets,
+    aws_lambda as _lambda
+)
+from constructs import Construct
+
+class EventBridgeStack(Stack):
+    def __init__(self, scope: Construct, id: str, lambda_fn: _lambda.IFunction, **kwargs):
+        super().__init__(scope, id, **kwargs)
+
+        rule = events.Rule(
+            self, "SampleEventRule",
+            event_pattern=events.EventPattern(
+                source=["my.custom.source"]
+            )
+        )
+
+        rule.add_target(targets.LambdaFunction(lambda_fn))
+✅ requirements.txt
+txt
+Copy code
+aws-cdk-lib==2.117.0
+constructs>=10.0.0
+✅ GitHub Actions Tip
+Deploy in .github/workflows/deploy.yml using:
 
 yaml
 Copy code
-name: Deploy CDK Stacks
+- run: cdk deploy --all --require-approval never
+Would you like me to export this as a downloadable ZIP project?
 
-on:
-  push:
-    branches:
-      - main
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Install AWS CDK
-        run: npm install -g aws-cdk
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      - name: Deploy CDK
-        run: cdk deploy --require-approval never
-Would you like me to generate a downloadable .zip of this full working project?
 
 
 
